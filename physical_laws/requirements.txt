@@ -1,0 +1,8 @@
+torch>=2.3
+transformers>=4.56
+huggingface_hub
+h5py
+numpy
+scikit-learn
+pillow
+matplotlib

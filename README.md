@@ -1,884 +1,130 @@
-:new: [2026-06-12] :fire: Metadata-guided training code and reference recipes (FMoW satellite imagery, HPA-WholeHR fluorescence imagery) are now released on the [`FINO`](https://github.com/facebookresearch/dinov3/tree/FINO) branch, accompanying [*Who Needs Labels? Adapting Vision Foundation Models With the Metadata You Already Have*](https://arxiv.org/abs/2606.05107) (Gardès et al., 2026).
+# DINOv3 tokens and physical laws
 
-[2026-03-10] The [Canopy Height Maps v2 (CHMv2) model](https://arxiv.org/abs/2603.06382) and inference code are now available (more details on downloading the model weights and using the code [here](#canopy-height-maps-v2-chmv2)). The model weights are also available in [Hugging Face Hub](https://huggingface.co/facebook/dinov3-vitl16-chmv2-dpt-head) and [supported](https://github.com/huggingface/transformers/blob/main/docs/source/en/model_doc/chmv2.md) by the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library. Building on our original high-resolution canopy height maps released in 2024, CHMv2 delivers substantial improvements in accuracy, detail, and global consistency by leveraging DINOv3.
+> This repository is a fork of [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3) with one added experiment in [`physical_laws/`](physical_laws/). We pass PhyWorld videos through DINOv3 ViT-S/16 and test whether the tokens differ with the physical law that moves the objects. The DINOv3 code is unchanged. Its README is in [README_upstream.md](README_upstream.md).
 
-[2025-11-20] Distillation code and configurations for ConvNeXt backbones are now released!
+<p align="center"><img src="physical_laws/assets/laws_tokens.png" width="100%" alt="Frames and DINOv3 patch tokens of one video per law at t = 0, 6, 12 and 18"></p>
 
-[2025-10-13] [Semantic segmentation](https://github.com/facebookresearch/dinov3?tab=readme-ov-file#linear-segmentation-with-data-augmentation-on-ade20k) (ADE20K) and [monocular depth estimation](https://github.com/facebookresearch/dinov3?tab=readme-ov-file#linear-depth-estimation-on-nyuv2-depth) (NYUv2-Depth) linear probing code are now released!
+Each pair shows a frame and its 16 × 16 DINOv3 patch tokens, coloured by the first three principal components of all tokens. One in-distribution video per law, frames 0, 6, 12 and 18 (10 frames per second).
 
-[2025-09-17] DINOv3 backbones are now supported by the [PyTorch Image Models / timm](https://github.com/huggingface/pytorch-image-models/) library starting with version [1.0.20](https://github.com/huggingface/pytorch-image-models/releases/tag/v1.0.20)
+- Results: [summary](#summary), [law separation](#law-separation), [token paths](#token-paths), [compression noise](#video-compression-noise)
+- Interactive viewer: [`physical_laws/viewer/site`](physical_laws/viewer/site), see [Viewer](#viewer)
+- How to run: [Reproduce](#reproduce)
 
-[2025-08-29] DINOv3 backbones are [supported](https://huggingface.co/docs/transformers/model_doc/dinov3) by released versions of the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library starting with version [4.56.0](https://github.com/huggingface/transformers/releases/tag/v4.56.0)
+## Summary
 
-[2025-08-14] DINOv3 backbones are now available in [Hugging Face Hub](https://huggingface.co/collections/facebook/dinov3-68924841bd6b561778e31009) and [supported](https://huggingface.co/docs/transformers/model_doc/dinov3) by the [development](https://github.com/huggingface/transformers/) version of the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library
+PhyWorld ([Kang et al., ICML 2025](https://phyworld.github.io)) has synthetic 2-D videos in which each scene follows one law. In uniform motion one ball moves at constant velocity without gravity. In parabola one ball is thrown sideways under gravity. In collision two balls collide head-on and perfectly elastically. We encode every frame with DINOv3 ViT-S/16 and compare the tokens of the three laws on all 467 in-distribution eval videos.
 
-# DINOv3 🦖🦖🦖
+- A single frame does not tell the laws apart. A linear probe on the token of one frame separates uniform motion from parabola at 69–74 % (chance 50 %). On the H.264 frames as released it reaches 87–88 %, because the compression noise differs between the three datasets.
+- The change between frames separates them. A probe on the first difference Δz separates uniform motion from parabola at 79 % with the CLS token and 90 % with the mean patch token.
+- The second difference Δ²z, the term that gravity adds, is at chance level (53 %).
+- A linear model of the token dynamics predicts its own law best. Fitted on uniform motion and tested on parabola, its error goes from 0.45 to 0.58 of the error of copying the last frame (CLS token). Fitted on parabola and tested on uniform motion, it goes from 0.47 to 0.76. Models fitted on one ball fail on two balls (17–36).
+- Token paths zigzag for every law. The ratio ‖Δ²z‖ / ‖Δz‖ is 1.5–1.8 for tokens and 0 (uniform motion) or 0.06 (parabola) for the ball centre in pixels. Consecutive token changes point in partly opposite directions (cosine −0.5). Independent noise in every frame gives the same numbers (ratio √3 = 1.73, cosine −0.5). The curvature that gravity adds, 6 % per step, is small next to this.
 
-**[Meta AI Research, FAIR](https://ai.meta.com/research/)**
+## Data and model
 
-Oriane Siméoni, Huy V. Vo, Maximilian Seitzer, Federico Baldassarre, Maxime Oquab, <br/>
-Cijo Jose, Vasil Khalidov, Marc Szafraniec, Seungeun Yi, Michaël Ramamonjisoa, <br/>
-Francisco Massa, Daniel Haziza, Luca Wehrstedt, Jianyuan Wang, <br/>
-Timothée Darcet, Théo Moutakanni, Leonel Sentana, Claire Roberts, <br/>
-Andrea Vedaldi, Jamie Tolan, John Brandt, Camille Couprie, <br/>
-Julien Mairal, Hervé Jégou, Patrick Labatut, Piotr Bojanowski
+| | |
+|---|---|
+| Videos | PhyWorld eval sets, Hugging Face [`magicr/phyworld`](https://huggingface.co/datasets/magicr/phyworld) (CC-BY-4.0). 256 × 256 px, 32 frames, 10 fps, H.264 |
+| Laws | uniform motion 1,152 videos, parabola 1,056, collision 1,635. In distribution (ID) means radius 0.7–1.5 and velocity 1–4 (both balls for collision): 176, 176 and 115 videos |
+| Mixed laws | combinatorial PHYRE scenes, out-of-template eval set (1,000 videos, 512 px, 50 frames). Used in the viewer only, as the first 32 frames at 256 px |
+| Model | DINOv3 ViT-S/16, [`facebook/dinov3-vits16-pretrain-lvd1689m`](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m) through Hugging Face transformers. Input 256 px. Output: CLS, 4 register and 16 × 16 patch tokens of 384 dimensions (last hidden state, after the final norm) |
+| Frames | Stored: the H.264 frames as released. Cleaned: every pixel with R, G and B ≥ 235 set to 255, which removes the compression noise of 1–5 grey levels on the white background |
 
-[ :scroll: [`Paper`](https://arxiv.org/abs/2508.10104)] [ :newspaper: [`Blog`](https://ai.meta.com/blog/dinov3-self-supervised-vision-model/)] [ :globe_with_meridians: [`Website`](https://ai.meta.com/dinov3/)] [ :book: [`BibTeX`](#citing-dinov3)]
+## Law separation
 
-Reference PyTorch implementation and models for DINOv3. For details, see the **[DINOv3](https://arxiv.org/abs/2508.10104)** paper.
+Samples are the frames t of the ID videos where frames t, t + 1 and t + 2 have every object fully inside the image: 4,366 for uniform motion, 3,685 for parabola and 2,475 for collision. Features are the state z<sub>t</sub>, the first difference Δz = z<sub>t+1</sub> − z<sub>t</sub> and the second difference Δ²z = z<sub>t+2</sub> − 2z<sub>t+1</sub> + z<sub>t</sub>, for the CLS token and for the mean of the 256 patch tokens.
 
-## Overview
+<p align="center"><img src="physical_laws/assets/separation.png" width="100%" alt="2-D PCA of the mean patch token for state, first and second difference, coloured by law"></p>
 
-<div align="center">
-  <img width="1364" height="1024" alt="market" src="https://github.com/user-attachments/assets/1411f491-988e-49cb-95ae-d03fe6e3c268" />
+2-D PCA of the mean patch token on cleaned frames, fitted without labels, up to 700 samples per law.
 
-  <i></em><b>High-resolution dense features.</b><br/>We visualize the cosine similarity maps obtained with DINOv3 output features<br/> between the patches marked with a red cross and all other patches.</i>
-</div>
+Linear probe: logistic regression on 64 principal components of the standardised feature, 5 folds split by video. Balanced accuracy on cleaned frames, stored frames in parentheses. Chance is 33 % for three laws and 50 % for two.
 
-<br/>
+| Feature | CLS, 3 laws | CLS, uniform vs parabola | Mean patch, 3 laws | Mean patch, uniform vs parabola |
+|---|---:|---:|---:|---:|
+| State z<sub>t</sub> | 74.9 % (87.6 %) | 69.0 % (87.0 %) | 77.8 % (88.9 %) | 73.8 % (88.0 %) |
+| First difference Δz | 57.8 % (50.3 %) | 78.7 % (65.1 %) | 76.2 % (67.8 %) | 89.9 % (84.3 %) |
+| Second difference Δ²z | 35.7 % (34.2 %) | 52.7 % (50.9 %) | 36.1 % (34.9 %) | 53.0 % (52.0 %) |
 
-An extended family of versatile vision foundation models producing high-quality dense features and achieving outstanding performance on various vision tasks including outperforming the specialized state of the art across a broad range of settings, without fine-tuning
+Linear dynamics: ridge regression z<sub>t+2</sub> ≈ A [z<sub>t+1</sub>, z<sub>t</sub>] on 64 principal components, fitted on 70 % of the videos of one law and tested on the other 30 % of each law. The table gives the squared error divided by the error of copying z<sub>t+1</sub> (1 = as good as copying). Linear extrapolation is 2z<sub>t+1</sub> − z<sub>t</sub> without fitting. Cleaned frames.
 
-## Pretrained models
+| CLS token, trained on | Tested on uniform motion | Tested on parabola | Tested on collision |
+|---|---:|---:|---:|
+| Uniform motion | **0.47** | 0.58 | 31.02 |
+| Parabola | 0.76 | **0.45** | 35.98 |
+| Collision | 0.72 | 0.74 | **0.56** |
+| Linear extrapolation | 3.09 | 2.94 | 2.45 |
 
-:information_source: Please follow the link provided below to get access to all the model weights: once accepted, an e-mail will be sent with the complete list of URLs pointing to all the available model weights (both backbones and adapters). These URLs can then be used to either:
-- download the model or adapter weights to a local filesystem and point `torch.hub.load()` to these local weights via the `weights` or `backbone_weights` parameters, or
-- directly invoke `torch.hub.load()` to download and load a backbone or an adapter from its URL via also the `weights` or `backbone_weights` parameters.
+| Mean patch token, trained on | Tested on uniform motion | Tested on parabola | Tested on collision |
+|---|---:|---:|---:|
+| Uniform motion | **0.47** | 0.64 | 20.32 |
+| Parabola | 0.93 | **0.42** | 17.12 |
+| Collision | 0.74 | 0.82 | **0.57** |
+| Linear extrapolation | 3.01 | 2.70 | 2.28 |
 
-See the example code snippets below.
+Stored-frame numbers and the scatter points are in [`physical_laws/results/sep.json`](physical_laws/results/sep.json).
 
-:warning: Please use `wget` instead of a web browser to download the weights.
+## Token paths
 
-ViT models pretrained on web dataset (LVD-1689M):
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th>Model</th>
-      <th>Parameters</th>
-      <th>Pretraining<br/>Dataset</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ViT-S/16 distilled </td>
-      <td align="right">21M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ViT-S+/16 distilled</td>
-      <td align="right">29M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ViT-B/16 distilled</td>
-      <td align="right">86M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ViT-L/16 distilled</td>
-      <td align="right">300M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ViT-H+/16 distilled</td>
-      <td align="right">840M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ViT-7B/16</td>
-      <td align="right">6,716M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-  </tbody>
-</table>
+d1 is the change from one frame to the next and d2 the change of that change. For tokens they are Δz and Δ²z of the samples above (cleaned frames). For pixels they are computed from the ball centres in the PhyWorld position streams of the same ID videos, at steps where the ball is inside the image. A path at constant velocity has ‖d2‖ / ‖d1‖ = 0 and cos(d<sub>t</sub>, d<sub>t+1</sub>) = 1. Independent noise in every frame that dominates the change gives √3 = 1.73 and −0.5.
 
-ConvNeXt models pretrained on web dataset (LVD-1689M):
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th>Model</th>
-      <th>Parameters</th>
-      <th>Pretraining<br/>Dataset</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ConvNeXt Tiny</td>
-      <td align="right">29M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ConvNeXt Small</td>
-      <td align="right">50M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ConvNeXt Base</td>
-      <td align="right">89M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ConvNeXt Large</td>
-      <td align="right">198M</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-  </tbody>
-</table>
+| | Uniform motion | Parabola | Collision |
+|---|---:|---:|---:|
+| ‖d2‖ / ‖d1‖, ball centre in pixels | 0.00 | 0.06 | 0.00 |
+| ‖d2‖ / ‖d1‖, CLS token | 1.77 | 1.74 | 1.60 |
+| ‖d2‖ / ‖d1‖, mean patch token | 1.75 | 1.68 | 1.54 |
+| cos(d<sub>t</sub>, d<sub>t+1</sub>), ball centre in pixels | +1.00 | +1.00 | +0.92 |
+| cos(d<sub>t</sub>, d<sub>t+1</sub>), CLS token | −0.51 | −0.47 | −0.26 |
+| cos(d<sub>t</sub>, d<sub>t+1</sub>), mean patch token | −0.47 | −0.37 | −0.19 |
 
-ViT models pretrained on satellite dataset (SAT-493M):
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th>Model</th>
-      <th>Parameters</th>
-      <th>Pretraining<br/>Dataset</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ViT-L/16 distilled</td>
-      <td align="right">300M</td>
-      <td align="center">SAT-493M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-    <tr>
-      <td>ViT-7B/16</td>
-      <td align="right">6,716M</td>
-      <td align="center">SAT-493M</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-  </tbody>
-</table>
+Ratios are medians over steps and cosines are means. The ball centre moves 6.0 px (uniform motion), 9.9 px (parabola) and 4.6 px (collision) per frame. Gravity adds 0.64 px per frame per frame. A patch is 16 px wide, so a ball moves less than one patch per frame and its tokens change with where the ball sits inside its patch. The numbers are in [`physical_laws/results/jitter.json`](physical_laws/results/jitter.json).
 
+## Video compression noise
 
-### Pretrained backbones (via PyTorch [Hub](https://docs.pytorch.org/docs/stable/hub.html))
+Patches at least one patch away from every object change by ‖Δz‖ = 1.13 per frame on stored frames and 0.81 on cleaned frames. Between blank frames after a ball has left the image the change is 0.36 on stored frames and 0 on cleaned frames. The PCA colours of every patch also shift when a ball leaves the image, which shows in the last frames of the parabola videos in the viewer.
 
-Please follow the instructions [here](https://pytorch.org/get-started/locally/) to install PyTorch (the only required dependency for loading the model). Installing PyTorch with CUDA support is strongly recommended.
+## Viewer
 
-```python
-import torch
+<p align="center"><img src="physical_laws/assets/viewer.png" width="100%" alt="Viewer, Compare laws view: three laws side by side with their patch tokens"></p>
 
-REPO_DIR = <PATH/TO/A/LOCAL/DIRECTORY/WHERE/THE/DINOV3/REPO/WAS/CLONED>
+[`physical_laws/viewer/site`](physical_laws/viewer/site) is a static page with its data (27 MB). Serve it and open http://localhost:8000:
 
-# DINOv3 ViT models pretrained on web images
-dinov3_vits16 = torch.hub.load(REPO_DIR, 'dinov3_vits16', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_vits16plus = torch.hub.load(REPO_DIR, 'dinov3_vits16plus', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_vitb16 = torch.hub.load(REPO_DIR, 'dinov3_vitb16', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_vitl16 = torch.hub.load(REPO_DIR, 'dinov3_vitl16', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_vith16plus = torch.hub.load(REPO_DIR, 'dinov3_vith16plus', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_vit7b16 = torch.hub.load(REPO_DIR, 'dinov3_vit7b16', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-
-# DINOv3 ConvNeXt models pretrained on web images
-dinov3_convnext_tiny = torch.hub.load(REPO_DIR, 'dinov3_convnext_tiny', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_convnext_small = torch.hub.load(REPO_DIR, 'dinov3_convnext_small', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_convnext_base = torch.hub.load(REPO_DIR, 'dinov3_convnext_base', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_convnext_large = torch.hub.load(REPO_DIR, 'dinov3_convnext_large', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-
-# DINOv3 ViT models pretrained on satellite imagery
-dinov3_vitl16 = torch.hub.load(REPO_DIR, 'dinov3_vitl16', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
-dinov3_vit7b16 = torch.hub.load(REPO_DIR, 'dinov3_vit7b16', source='local', weights=<CHECKPOINT/URL/OR/PATH>)
+```bash
+python -m http.server -d physical_laws/viewer/site 8000
 ```
 
-### Pretrained backbones (via Hugging Face [Transformers](https://huggingface.co/docs/transformers/))
+- Compare laws: uniform motion, parabola and collision side by side, each with the frame above its tokens, on one frame slider. The video buttons pick the same kind of video in every law (two ID videos, small and large radius, slow and fast velocity). Hovering outlines the same patch in every law. Below are per-frame charts and the law separation results.
+- One video: the frame on the left and its tokens on the right, all 32 frames, and the CLS paths of 85 videos per scenario. This view also has the combinatorial PHYRE scenes.
+- Token views: PCA colours, ‖Δz‖ to the previous frame, cosine similarity to a clicked patch, and a matrix of the 256 patch tokens (rows, raster order) by 32 basis coefficients (columns).
+- Frames: switch between stored and cleaned frames.
 
-All the backbones are available in the [DINOv3](https://huggingface.co/collections/facebook/dinov3-68924841bd6b561778e31009) collection on Hugging Face Hub and supported via the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library (with released packages from version 4.56.0). Please refer to the corresponding documentation for usage, but below is a short example that demonstrates how to obtain an image embedding with either [Pipeline] or the [AutoModel] class.
+## Reproduce
 
-```python
-from transformers import pipeline
-from transformers.image_utils import load_image
-
-url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/pipeline-cat-chonk.jpeg"
-image = load_image(url)
-
-feature_extractor = pipeline(
-    model="facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
-    task="image-feature-extraction",
-)
-features = feature_extractor(image)
+```bash
+pip install -r physical_laws/requirements.txt
+huggingface-cli login
+python physical_laws/download_data.py --out data
+python physical_laws/separation.py out/sep --src data/phyworld
+python physical_laws/jitter.py out/sep/sep_features.npz physical_laws/results/jitter.json --src data/phyworld
+python physical_laws/extract.py out/viewer --src data/phyworld
+python physical_laws/build_viewer.py out/viewer out/sep/sep.json physical_laws/viewer/site --font data/fonts/latinmodern-math.otf
+python physical_laws/make_figures.py out/viewer out/sep/sep.json physical_laws/assets
 ```
 
-```python
-import torch
-from transformers import AutoImageProcessor, AutoModel
-from transformers.image_utils import load_image
-
-url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-image = load_image(url)
-
-pretrained_model_name = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m"
-processor = AutoImageProcessor.from_pretrained(pretrained_model_name)
-model = AutoModel.from_pretrained(
-    pretrained_model_name,
-    device_map="auto",
-)
-
-inputs = processor(images=image, return_tensors="pt").to(model.device)
-with torch.inference_mode():
-    outputs = model(**inputs)
-
-pooled_output = outputs.pooler_output
-print("Pooled output shape:", pooled_output.shape)
-```
-
-where `model` and `pretrained_model_name` above can be one of:
-- `facebook/dinov3-vits16-pretrain-lvd1689m`
-- `facebook/dinov3-vits16plus-pretrain-lvd1689m`
-- `facebook/dinov3-vitb16-pretrain-lvd1689m`
-- `facebook/dinov3-vitl16-pretrain-lvd1689m`
-- `facebook/dinov3-vith16plus-pretrain-lvd1689m`
-- `facebook/dinov3-vit7b16-pretrain-lvd1689m`
-- `facebook/dinov3-convnext-base-pretrain-lvd1689m`
-- `facebook/dinov3-convnext-large-pretrain-lvd1689m`
-- `facebook/dinov3-convnext-small-pretrain-lvd1689m`
-- `facebook/dinov3-convnext-tiny-pretrain-lvd1689m`
-- `facebook/dinov3-vitl16-pretrain-sat493m`
-- `facebook/dinov3-vit7b16-pretrain-sat493m`
-
-### Image transforms
-
-For models using the LVD-1689M weights (pretrained on web images), please use the following transform (standard ImageNet evaluation transform):
-
-```python
-import torchvision
-from torchvision.transforms import v2
-
-def make_transform(resize_size: int = 256):
-    to_tensor = v2.ToImage()
-    resize = v2.Resize((resize_size, resize_size), antialias=True)
-    to_float = v2.ToDtype(torch.float32, scale=True)
-    normalize = v2.Normalize(
-        mean=(0.485, 0.456, 0.406),
-        std=(0.229, 0.224, 0.225),
-    )
-    return v2.Compose([to_tensor, resize, to_float, normalize])
-```
-
-
-For models using the SAT-493M weights (pretrained on satellite imagery), please use the following transform:
-
-
-```python
-import torchvision
-from torchvision.transforms import v2
-
-def make_transform(resize_size: int = 256):
-    to_tensor = v2.ToImage()
-    resize = v2.Resize((resize_size, resize_size), antialias=True)
-    to_float = v2.ToDtype(torch.float32, scale=True)
-    normalize = v2.Normalize(
-        mean=(0.430, 0.411, 0.296),
-        std=(0.213, 0.156, 0.143),
-    )
-    return v2.Compose([to_tensor, resize, to_float, normalize])
-```
-
-### Pretrained heads - Image classification
-
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th>Backbone</th>
-      <th>Pretraining<br/>Dataset</th>
-      <th>Head<br/>Dataset</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ViT-7B/16</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center">ImageNet</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-  </tbody>
-</table>
-
-
-The (full) classifier models can be loaded via PyTorch Hub:
-
-```python
-import torch
-
-# DINOv3
-dinov3_vit7b16_lc = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_lc', source="local", weights=<DEPTHER/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
-
-```
-
-### Pretrained heads - Depther trained on SYNTHMIX dataset
-
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th>Backbone</th>
-      <th>Pretraining<br/>Dataset</th>
-      <th>Head<br/>Dataset</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ViT-7B/16</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center">SYNTHMIX</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-  </tbody>
-</table>
-
-
-```python
-depther = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_dd', source="local", weights=<DEPTHER/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
-```
-
-Full example code of depther on an image
-
-```python
-from PIL import Image
-import torch
-from torchvision.transforms import v2
-import matplotlib.pyplot as plt
-from matplotlib import colormaps
-
-def get_img():
-    import requests
-    url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    image = Image.open(requests.get(url, stream=True).raw).convert("RGB")
-    return image
-
-def make_transform(resize_size: int | list[int] = 768):
-    to_tensor = v2.ToImage()
-    resize = v2.Resize((resize_size, resize_size), antialias=True)
-    to_float = v2.ToDtype(torch.float32, scale=True)
-    normalize = v2.Normalize(
-        mean=(0.485, 0.456, 0.406),
-        std=(0.229, 0.224, 0.225),
-    )
-    return v2.Compose([to_tensor, resize, to_float, normalize])
-
-depther = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_dd', source="local", weights=<DEPTHER/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
-
-img_size = 1024
-img = get_img()
-transform = make_transform(img_size)
-with torch.inference_mode():
-    with torch.autocast('cuda', dtype=torch.bfloat16):
-        batch_img = transform(img)[None]
-        batch_img = batch_img
-        depths = depther(batch_img)
-
-plt.figure(figsize=(12, 6))
-plt.subplot(121)
-plt.imshow(img)
-plt.axis("off")
-plt.subplot(122)
-plt.imshow(depths[0,0].cpu(), cmap=colormaps["Spectral"])
-plt.axis("off")
-
-```
-
-#### Reproduce paper results
-
-Make sure the NYU dataset is setup following [this](DATASETS.md#depth-estimation-on-nyu).
-
-Launch the following to reproduce our paper's depth estimation results on NYUv2 with the pretrained Depther trained on SYNTHMIX:
-
-```shell
-PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/depth/run.py \
-config=dinov3/eval/depth/configs/config-nyu-synthmix-dpt-inference.yaml \
-datasets.root=<PATH/TO/DATASET> \
-load_from=dinov3_vit7b16_dd \
---output-dir <PATH/TO/OUTPUT/DIR>
-```
-
-Notes:
-- if you want to launch the code without dinov3.run.submit, you can do so using python directly or torchrun:
-
-```shell
-PYTHONPATH=. python dinov3/eval/depth/run.py \
-config=dinov3/eval/depth/configs/config-nyu-synthmix-dpt-inference.yaml \
-datasets.root=<PATH/TO/DATASET> \
-load_from=dinov3_vit7b16_dd \
-output_dir=<PATH/TO/OUTPUT/DIR>
-```
-
-- One can also save prediction results using `result_config.save_results=true`.
-
-
-### Pretrained heads - Detector trained on COCO2017 dataset
-
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th>Backbone</th>
-      <th>Pretraining<br/>Dataset</th>
-      <th>Head<br/>Dataset</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ViT-7B/16</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center">COCO2017</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-  </tbody>
-</table>
-
-
-```python
-detector = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_de', source="local", weights=<DETECTOR/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
-```
-
-### Pretrained heads - Segmentor trained on ADE20K dataset
-
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th>Backbone</th>
-      <th>Pretraining<br/>Dataset</th>
-      <th>Head<br/>Dataset</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ViT-7B/16</td>
-      <td align="center">LVD-1689M</td>
-      <td align="center">ADE20K</td>
-      <td align="center"><a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a></td>
-    </tr>
-  </tbody>
-</table>
-
-```python
-segmentor = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_ms', source="local", weights=<SEGMENTOR/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
-```
-
-Example command to run a full inference on ADE20K with the provided segmentor (ViT-7B + M2F):
-
-```shell
-PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/segmentation/run.py \
-config=dinov3/eval/segmentation/configs/config-ade20k-m2f-inference.yaml  \
-datasets.root=<PATH/TO/DATASET> \
-load_from=dinov3_vit7b16_ms \
---output-dir <PATH/TO/OUTPUT/DIR>
-```
-
-Full example code of segmentator on an image
-
-```python
-import sys
-sys.path.append(REPO_DIR)
-
-from PIL import Image
-import torch
-from torchvision import transforms
-import matplotlib.pyplot as plt
-from matplotlib import colormaps
-from functools import partial
-from dinov3.eval.segmentation.inference import make_inference
-
-
-def get_img():
-    import requests
-    url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    image = Image.open(requests.get(url, stream=True).raw).convert("RGB")
-    return image
-
-def make_transform(resize_size: int | list[int] = 768):
-    to_tensor = v2.ToImage()
-    resize = v2.Resize((resize_size, resize_size), antialias=True)
-    to_float = v2.ToDtype(torch.float32, scale=True)
-    normalize = v2.Normalize(
-        mean=(0.485, 0.456, 0.406),
-        std=(0.229, 0.224, 0.225),
-    )
-    return v2.Compose([to_tensor, resize, to_float, normalize])
-
-segmentor = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_ms', source="local", weights=<SEGMENTOR/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
-
-img_size = 896
-img  = get_img()
-transform = make_transform(img_size)
-with torch.inference_mode():
-    with torch.autocast('cuda', dtype=torch.bfloat16):
-        batch_img = transform(img)[None]
-        pred_vit7b = segmentor(batch_img)  # raw predictions
-        # actual segmentation map
-        segmentation_map_vit7b = make_inference(
-            batch_img,
-            segmentor,
-            inference_mode="slide",
-            decoder_head_type="m2f",
-            rescale_to=(img.size[-1], img.size[-2]),
-            n_output_channels=150,
-            crop_size=(img_size, img_size),
-            stride=(img_size, img_size),
-            output_activation=partial(torch.nn.functional.softmax, dim=1),
-        ).argmax(dim=1, keepdim=True)
-plt.figure(figsize=(12, 6))
-plt.subplot(121)
-plt.imshow(img)
-plt.axis("off")
-plt.subplot(122)
-plt.imshow(segmentation_map_vit7b[0,0].cpu(), cmap=colormaps["Spectral"])
-plt.axis("off")
-```
-
-
-
-
-### Pretrained heads - Zero-shot tasks with `dino.txt`
-
-<table style="margin: auto">
-  <thead>
-    <tr>
-      <th rowspan="2">Backbone</th>
-      <th>Download</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>ViT-L/16 distilled</td>
-      <td align="center">
-        <a href="https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/">[link]</a>,
-        <a href="https://dl.fbaipublicfiles.com/dinov3/thirdparty/bpe_simple_vocab_16e6.txt.gz">vocabulary</a>,
-        <a href="https://dl.fbaipublicfiles.com/dinov2/thirdparty/LICENSE">vocabulary license</a>
-      </td>
-    </tr>
-  </tbody>
-</table>
-
-The (full) dino.txt model can be loaded via PyTorch Hub:
-
-```python
-import torch
-# DINOv3
-dinov3_vitl16_dinotxt_tet1280d20h24l, tokenizer = torch.hub.load(REPO_DIR, 'dinov3_vitl16_dinotxt_tet1280d20h24l', weights=<SEGMENTOR/CHECKPOINT/URL/OR/PATH>, backbone_weights=<BACKBONE/CHECKPOINT/URL/OR/PATH>)
-```
-
-
-## Installation
-
-The training and evaluation code requires PyTorch version >= 2.7.1 as well as a few other 3rd party packages. Note that the code has only been tested with the specified versions and also expects a Linux environment. To setup all the required dependencies for training and evaluation, please follow the instructions below:
-
-*[micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)* **(Recommended)** - Clone the repository and then create and activate a `dinov3` conda environment using the provided environment definition:
-
-```shell
-micromamba env create -f conda.yaml
-micromamba activate dinov3
-```
-
-## Getting started
-
-Several notebooks are provided to get started applying DINOv3:
-- [PCA of patch features](notebooks/pca.ipynb): display the PCA of DINOv3 patch features on a foreground object (rainbow visualizations from the paper) [[Run in Google Colab]](https://colab.research.google.com/github/facebookresearch/dinov3/blob/main/notebooks/pca.ipynb)
-- [Foreground segmentation](notebooks/foreground_segmentation.ipynb): train a linear foreground segmentation model based on DINOv3 features [[Run in Google Colab]](https://colab.research.google.com/github/facebookresearch/dinov3/blob/main/notebooks/foreground_segmentation.ipynb)
-- [Dense and sparse matching](notebooks/dense_sparse_matching.ipynb): match patches from objects on two different images based on DINOv3 features [[Run in Google Colab]](https://colab.research.google.com/github/facebookresearch/dinov3/blob/main/notebooks/dense_sparse_matching.ipynb)
-- [Segmentation tracking](notebooks/segmentation_tracking.ipynb): video segmentation tracking using a non-parametric method based on DINOv3 features [[Run in Google Colab]](https://colab.research.google.com/github/facebookresearch/dinov3/blob/main/notebooks/segmentation_tracking.ipynb)
-- [Zero-shot segmentation with DINOv3-based dino.txt](notebooks/dinotxt_segmentation_inference.ipynb): compute the open-vocabulary segmentation results with dino.txt strategy.
-
-## Data preparation
-
-### ImageNet-1k
-
-The root directory of the dataset should hold the following contents:
-
-- `<ROOT>/test/ILSVRC2012_test_00000001.JPEG`
-- `<ROOT>/test/[..]`
-- `<ROOT>/test/ILSVRC2012_test_00100000.JPEG`
-- `<ROOT>/train/n01440764/n01440764_10026.JPEG`
-- `<ROOT>/train/[...]`
-- `<ROOT>/train/n15075141/n15075141_9993.JPEG`
-- `<ROOT>/val/n01440764/ILSVRC2012_val_00000293.JPEG`
-- `<ROOT>/val/[...]`
-- `<ROOT>/val/n15075141/ILSVRC2012_val_00049174.JPEG`
-- `<ROOT>/labels.txt`
-
-The provided dataset implementation expects a few additional metadata files to be present under the extra directory:
-
-- `<EXTRA>/class-ids-TRAIN.npy`
-- `<EXTRA>/class-ids-VAL.npy`
-- `<EXTRA>/class-names-TRAIN.npy`
-- `<EXTRA>/class-names-VAL.npy`
-- `<EXTRA>/entries-TEST.npy`
-- `<EXTRA>/entries-TRAIN.npy`
-- `<EXTRA>/entries-VAL.npy`
-
-These metadata files can be generated (once) with the following lines of Python code:
-
-```python
-from dinov3.data.datasets import ImageNet
-
-for split in ImageNet.Split:
-    dataset = ImageNet(split=split, root="<ROOT>", extra="<EXTRA>")
-    dataset.dump_extra()
-```
-
-Note that the root and extra directories do not have to be distinct directories.
-
-### ImageNet-22k
-
-Please adapt the [dataset class](dinov3/data/datasets/image_net_22k.py) to match your local setup.
-
-<br />
-
-:warning: To execute the commands provided in the next sections for training and evaluation, the `dinov3` package should be included in the Python module search path, i.e. simply prefix the command to run with `PYTHONPATH=.`.
-
-## Training
-
-### Fast setup: training DINOv3 ViT-L/16 on ImageNet-1k
-
-Run DINOv3 pre-training on 4 H100-80GB nodes (32 GPUs) in a SLURM cluster environment with submitit:
-
-```shell
- PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/train/train.py \
-  --nodes 4 \
-  --config-file dinov3/configs/train/vitl_im1k_lin834.yaml \
-  --output-dir <PATH/TO/OUTPUT/DIR> \
-  train.dataset_path=ImageNet22k:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET>
-```
-Training time is approximately 14 hours and the resulting checkpoint should reach 82.0% on k-NN eval and 83.5% on linear eval.
-
-The training code saves the weights of the teacher in the eval folder every 12500 iterations for evaluation.
-
-### Exact DINOv3 setup: training DINOv3 ViT-7B/16
-
-DINOv3 ViT-7B/16 is trained on a private dataset. The training involves 3 stages:
-- Pretraining
-- Gram anchoring
-- High resolution adaptation
-
-#### Pretraining
-
-Launch DINOV3 ViT-7B/16 pretraining on 32 nodes (256 GPUs) in a SLURM cluster environment with submitit.
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/train/train.py \
-  --nodes 32 \
-  --config-file dinov3/configs/train/dinov3_vit7b16_pretrain.yaml \
-  --output-dir <PATH/TO/OUTPUT/DIR> \
-  train.dataset_path=<DATASET>:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET>
-```
-
-#### Gram anchoring
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/train/train.py \
-  --nodes 32 \
-  --config-file dinov3/configs/train/dinov3_vit7b16_gram_anchor.yaml \
-  --output-dir <PATH/TO/OUTPUT/DIR> \
-  train.dataset_path=<DATASET>:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET> \
-  gram.ckpt=<PATH/TO/GRAM_TEACHER_FROM_PREVIOUS_STEP>
-```
-
-#### High-resolution adaptation
-
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/train/train.py \
-  --nodes 32 \
-  --config-file dinov3/configs/train/dinov3_vit7b16_high_res_adapt.yaml \
-  --output-dir <PATH/TO/OUTPUT/DIR> \
-  train.dataset_path=<DATASET>:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET> \
-  gram.ckpt=<PATH/TO/TEACHER_FROM_GRAM> \
-  student.resume_from_teacher_chkpt=<PATH/TO/TEACHER_FROM_GRAM>
-```
-
-## Multi-distillation
-
-### Test setup:
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/train/train.py \
-  --nodes 1 \
-  --config-file dinov3/configs/train/multi_distillation_test.yaml \
-  --output-dir <PATH/TO/OUTPUT/DIR> \
-  --multi-distillation \
-  train.dataset_path=<DATASET>:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET>
-```
-
-## Evaluation
-
-The training code regularly saves the teacher weights. In order to evaluate the model, run the following evaluation on a single node:
-
-
-### Logistic regression classification on ImageNet-1k
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/eval/log_regression.py \
-  model.config_file=<PATH/TO/OUTPUT/DIR>/config.yaml \
-  model.pretrained_weights=<PATH/TO/OUTPUT/DIR>/teacher_checkpoint.pth \
-  output_dir=<PATH/TO/OUTPUT/DIR> \
-  train.dataset=ImageNet:split=TRAIN:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET> \
-  eval.test_dataset=ImageNet:split=VAL:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET>
-```
-
-### k-NN classification on ImageNet-1k
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/eval/knn.py \
-  model.config_file=<PATH/TO/OUTPUT/DIR>/config.yaml \
-  model.pretrained_weights=<PATH/TO/OUTPUT/DIR>/teacher_checkpoint.pth \
-  output_dir=<PATH/TO/OUTPUT/DIR> \
-  train.dataset=ImageNet:split=TRAIN:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET> \
-  eval.test_dataset=ImageNet:split=VAL:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET>
-```
-
-### Linear classification with data augmentation on ImageNet-1k
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/eval/linear.py \
-  model.config_file=<PATH/TO/OUTPUT/DIR>/config.yaml \
-  model.pretrained_weights=<PATH/TO/OUTPUT/DIR>/teacher_checkpoint.pth \
-  output_dir=<PATH/TO/OUTPUT/DIR> \
-  train.dataset=ImageNet:split=TRAIN:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET> \
-  train.val_dataset=ImageNet:split=VAL:root=<PATH/TO/DATASET>:extra=<PATH/TO/DATASET>
-```
-
-### Linear segmentation with data augmentation on ADE20K
-
-```shell
-PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/segmentation/run.py \
-model.dino_hub=dinov3_vit7b16 \
-config=dinov3/eval/segmentation/configs/config-ade20k-linear-training.yaml \
-datasets.root=<PATH/TO/DATASET> \
---output-dir <PATH/TO/OUTPUT/DIR>
-```
-
-After the job completes, you will find in the output path directory you specified
-- `segmentation_config.yaml` that contains the config you trained the model with;
-- `model_final.pth`, the final linear head checkpoint at the end of training; and
-- `results-semantic-segmentation.csv` with the final metrics.
-
-
-#### Linear depth estimation on NYUv2 Depth
-```shell
-PYTHONPATH=. python -m dinov3.run.submit dinov3/eval/depth/run.py \
-    model.dino_hub=dinov3_vit7b16 \
-    config=dinov3/eval/depth/configs/config-nyu.yaml \
-    datasets.root=<PATH/TO/DATASET> \
-    --output-dir <PATH/TO/OUTPUT/DIR>
-```
-
-After the job completes, you will find in the output path directory you specified
-- `depth_config.yaml` that contains the config you trained the model with;
-- `model_final.pth`, the final linear head checkpoint at the end of training; and
-- `results-depth.csv` with the final metrics.
-
-### Text alignment on DINOv3 using dino.txt
-
-Text alignment can be done following the method from `dino.txt` aka [DINOv2 Meets Text](https://arxiv.org/abs/2412.16334).
-
-```shell
-PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/eval/text/train_dinotxt.py \
-   --nodes 4 \
-  # An example config for text alignment is here: dinov3/eval/text/configs/dinov3_vitl_text.yaml \
-  trainer_config_file="<PATH/TO/DINOv3/TEXT/CONFIG>" \
-  output-dir=<PATH/TO/OUTPUT/DIR>
-```
-Launching the above trains text alignment on 4 nodes with 8 gpus each (32 gpus in total).
-Please note that the text alignment model in the DINOv3 paper was trained on a private dataset and here we have given an example config in ```dinov3/eval/text/configs/dinov3_vitl_text.yaml``` using ```CocoCaptions``` dataset for illustration purposes.
-Please adapt the provided ```CocoCaptions``` dataset class, the dataset can be found [here](https://www.kaggle.com/datasets/nikhil7280/coco-image-caption)
-
-
-## Canopy Height Maps v2 (CHMv2)
-
-John Brandt, Seungeun Yi, Jamie Tolan, Xinyuan Li, Peter Potapov, <br/>
-Jessica Ertel, Justine Spore, Huy V. Vo, Michaël Ramamonjisoa, Patrick Labatut, <br/>
-Piotr Bojanowski, Camille Couprie
-
-[ :scroll: [`Paper`](https://arxiv.org/abs/2603.06382)] [ :newspaper: [`Blog`](http://ai.meta.com/blog/world-resources-institute-dino-canopy-height-maps-v2)]
-
-### CHMv2 model loading (via PyTorch [Hub](https://docs.pytorch.org/docs/stable/hub.html))
-
-:information_source: Please follow the link provided below to get access to the CHMv2 model weights: once accepted, an e-mail will be sent with the URL pointing to the available model weights. The URL can then be used to either:
-- download the model weights to a local filesystem and point `torch.hub.load()` to these local weights via the `weights` parameters, or
-- directly invoke `torch.hub.load()` to download and load a backbone from its URL.
-
-CHMv2 uses the DINOv3 ViT-L/16 satellite as the backbone, available after requesting access [here](https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/).
-
-:warning: Please use `wget` instead of a web browser to download the weights.
-
-Download link: https://ai.meta.com/resources/models-and-libraries/chmv2-downloads/
-
-```python
-import torch
-from dinov3.hub.backbones import Weights
-
-REPO_DIR = <PATH/TO/A/LOCAL/DIRECTORY/WHERE/THE/DINOv3/REPO/WAS/CLONED>
-
-chmv2_model = torch.hub.load(
-    REPO_DIR,
-    'dinov3_vitl16_chmv2',
-    source="local",
-    weights="<CHMV2_MODEL/CHECKPOINT/URL/OR/PATH>",
-    backbone_weights=Weights.SAT493M,  # or <DINOV3_VITL_SAT/CHECKPOINT/URL/OR/PATH>
-)
-```
-
-Refer to this [notebook](notebooks/chmv2_inference.ipynb) for an example of how to use the DINOv3 + CHMv2 model.
-
-This [notebook](notebooks/chmv2_dataset_exploration.ipynb) can be used to download inference data from the existing global dataset stored on aws.
-
-### CHMv2 model loading (via Hugging Face [Transformers](https://huggingface.co/docs/transformers/))
-
-The CHMv2 model is also available on [Hugging Face Hub](https://huggingface.co/facebook/dinov3-vitl16-chmv2-dpt-head) and supported via the Hugging Face [Transformers](https://huggingface.co/docs/transformers/index) library. Please refer to the corresponding documentation for usage, but below is a short example that demonstrates how to obtain canopy height predictions on a sample image.
-
-```python
-from PIL import Image
-import torch
-
-from transformers import AutoModelForDepthEstimation, AutoImageProcessor
-
-processor = AutoImageProcessor.from_pretrained("facebook/dinov3-vitl16-chmv2-dpt-head")
-model = AutoModelForDepthEstimation.from_pretrained("facebook/dinov3-vitl16-chmv2-dpt-head")
-
-image = Image.open("image.tif")
-inputs = processor(images=image, return_tensors="pt")
-
-with torch.no_grad():
-    outputs = model(**inputs)
-
-depth = processor.post_process_depth_estimation(
-    outputs, target_sizes=[(image.height, image.width)]
-)[0]["predicted_depth"]
-```
-
-## License
-
-DINOv3 code and model weights are released under the DINOv3 License. See [LICENSE.md](LICENSE.md) for additional details.
-
-## Contributing
-
-See [contributing](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
-
-## Citing DINOv3
-
-If you find this repository useful, please consider giving a star :star: and citation :t-rex::
-
-```
-@misc{simeoni2025dinov3,
-  title={{DINOv3}},
-  author={Sim{\'e}oni, Oriane and Vo, Huy V. and Seitzer, Maximilian and Baldassarre, Federico and Oquab, Maxime and Jose, Cijo and Khalidov, Vasil and Szafraniec, Marc and Yi, Seungeun and Ramamonjisoa, Micha{\"e}l and Massa, Francisco and Haziza, Daniel and Wehrstedt, Luca and Wang, Jianyuan and Darcet, Timoth{\'e}e and Moutakanni, Th{\'e}o and Sentana, Leonel and Roberts, Claire and Vedaldi, Andrea and Tolan, Jamie and Brandt, John and Couprie, Camille and Mairal, Julien and J{\'e}gou, Herv{\'e} and Labatut, Patrick and Bojanowski, Piotr},
-  year={2025},
-  eprint={2508.10104},
-  archivePrefix={arXiv},
-  primaryClass={cs.CV},
-  url={https://arxiv.org/abs/2508.10104},
-}
-```
+The DINOv3 weights on Hugging Face are gated. Accept the licence on the model page before `huggingface-cli login`. ffmpeg has to be on the PATH. On one RTX 3090, `separation.py` takes about 20 minutes (467 videos, stored and cleaned frames) and `extract.py` about 10 minutes. Both take `--limit` or `--bg` for a quick test run.
+
+| File | Content |
+|---|---|
+| `physical_laws/download_data.py` | PhyWorld eval sets (about 80 MB) and the Latin Modern Math font used by the viewer |
+| `physical_laws/separation.py` | features of all ID videos, PCA, linear probes, cross-law dynamics → `sep.json`, `sep_features.npz` |
+| `physical_laws/jitter.py` | ‖d2‖ / ‖d1‖ and cos(d<sub>t</sub>, d<sub>t+1</sub>) for tokens and pixels → `jitter.json` |
+| `physical_laws/extract.py` | tokens of the 24 videos shown in the viewer and the CLS paths of 85 videos per scenario |
+| `physical_laws/build_viewer.py`, `physical_laws/viewer/viewer_src.html` | static viewer |
+| `physical_laws/make_figures.py` | figures in `physical_laws/assets` |
+| `physical_laws/results/` | `sep.json`, `jitter.json` |
+
+## Limits
+
+- One encoder (ViT-S/16), linear probes and linear dynamics only. The zigzag depends on where the ball sits inside its patch, which is a function of the state, so a nonlinear model can use it.
+- Uniform motion starts anywhere in the image and parabola in the upper third, so the state probe also sees the height of the ball.
+- Only the eval sets are used, not the PhyWorld training sets.
